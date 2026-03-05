@@ -1,0 +1,132 @@
+# docker-compose.yml
+# Local Kubeflow Pipelines development environment using Kind + KFP
+#
+# Usage:
+#   docker compose up -d          # Start the environment
+#   docker compose logs -f kfp    # Follow KFP logs
+#   docker compose down -v        # Tear down everything
+#
+# This sets up:
+#   1. A Kind (Kubernetes-in-Docker) cluster
+#   2. Kubeflow Pipelines deployed on that cluster
+#   3. MinIO for artifact storage
+#   4. MySQL for metadata storage
+#   5. MLflow tracking server for experiment management
+
+version: "3.9"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Kind cluster -- single-node Kubernetes inside Docker
+  # ---------------------------------------------------------------------------
+  kind-cluster:
+    image: kindest/node:v1.28.0
+    container_name: kfp-kind-control-plane
+    privileged: true
+    ports:
+      - "6443:6443"      # Kubernetes API
+      - "8080:8080"      # KFP UI (port-forwarded later)
+      - "9000:9000"      # MinIO console
+    volumes:
+      - kind-data:/var/lib/containerd
+    environment:
+      - KIND_EXPERIMENTAL_PROVIDER=docker
+    healthcheck:
+      test: ["CMD", "kubectl", "cluster-info"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # MinIO -- S3-compatible object store for pipeline artifacts
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2024-01-01T16-36-33Z
+    container_name: kfp-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minio123}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # MySQL -- metadata store for KFP
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    container_name: kfp-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-kfp_metadata}
+      MYSQL_USER: ${MYSQL_USER:-kfp}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-kfppassword}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # MLflow tracking server -- experiment and model registry
+  # ---------------------------------------------------------------------------
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.9.2
+    container_name: kfp-mlflow
+    command: >
+      mlflow server
+        --host 0.0.0.0
+        --port 5000
+        --backend-store-uri sqlite:///mlflow/mlflow.db
+        --default-artifact-root s3://mlflow-artifacts/
+    ports:
+      - "5000:5000"
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minio}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minio123}
+    volumes:
+      - mlflow-data:/mlflow
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Pipeline runner -- builds and submits KFP pipelines
+  # ---------------------------------------------------------------------------
+  pipeline-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kfp-pipeline-runner
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+    environment:
+      KFP_ENDPOINT: ${KFP_ENDPOINT:-http://kind-cluster:8080}
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minio}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minio123}
+    depends_on:
+      - minio
+      - mlflow
+    command: ["python", "-m", "src.pipelines.training_pipeline"]
+
+volumes:
+  kind-data:
+  minio-data:
+  mysql-data:
+  mlflow-data:

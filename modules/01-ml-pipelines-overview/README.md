@@ -1,10 +1,10 @@
-# Module 01: ML Pipelines Overview
+# Module 01: ML Pipelines Overview -- Kubeflow Fundamentals
 
 | | |
 |---|---|
 | **Time** | 3-5 hours |
 | **Difficulty** | Beginner |
-| **Prerequisites** | Docker installed, basic terminal knowledge |
+| **Prerequisites** | Python 3.10+, Docker installed, basic terminal knowledge |
 
 ---
 
@@ -12,38 +12,74 @@
 
 By the end of this module, you will be able to:
 
-- Understand the core concepts of ML Pipelines Overview
-- Set up and configure the required tools and environments
-- Complete hands-on exercises that demonstrate practical skills
-- Apply these skills in real-world scenarios
-- Pass the module validation to prove your understanding
+- Explain the purpose and architecture of Kubeflow Pipelines (KFP)
+- Describe how KFP components, pipelines, and runs relate to each other
+- Install the KFP v2 SDK and verify your local environment
+- Compile and inspect a minimal "hello world" pipeline
+- Navigate the Kubeflow Pipelines UI
 
 ---
 
 ## Concepts
 
-### What is ML Pipelines Overview?
+### What Are ML Pipelines?
 
-ML Pipelines Overview is a fundamental component of ML Pipeline with Kubeflow: Zero to Hero. In production environments, this skill is used daily by engineers to build, deploy, and maintain reliable systems.
+An **ML pipeline** is a sequence of automated, reproducible steps that take raw data and produce a trained, validated, deployable model. In production, teams never train models by running notebooks manually. Instead they encode every step -- data ingestion, feature engineering, training, evaluation, deployment -- into a pipeline that can be versioned, tested, scheduled, and audited.
 
-**Real-world analogy:** Think of ML Pipelines Overview like learning to read a map before navigating a city. Once you understand the fundamentals, you can find your way through any complex system.
+**Why pipelines matter in production:**
 
-### Why Does This Matter?
-
-Companies like Google, Netflix, Amazon, and Meta rely on these practices to:
-- Deploy thousands of times per day
-- Maintain 99.99% uptime
-- Scale to millions of users
-- Recover from failures in minutes
-
-### Key Terminology
-
-| Term | Definition |
+| Manual workflow | Pipeline-based workflow |
 |---|---|
-| **Core concept 1** | The foundational building block of this module |
-| **Core concept 2** | How components interact and communicate |
-| **Core concept 3** | The pattern used for reliability and scale |
-| **Best practice** | The industry-standard approach to implementation |
+| Notebooks run by hand on a laptop | Automated, serverless execution on Kubernetes |
+| "It works on my machine" | Containerised, reproducible environments |
+| No audit trail | Full metadata and lineage for every run |
+| Retraining is a weekend task | Retraining is triggered by a cron job or data event |
+
+### Kubeflow Pipelines Architecture
+
+Kubeflow Pipelines runs on Kubernetes and consists of several key services:
+
+```
+                    +---------------------+
+                    |   KFP UI (React)    |
+                    +----------+----------+
+                               |
+                    +----------v----------+
+                    |   KFP API Server    |
+                    +----------+----------+
+                               |
+          +--------------------+--------------------+
+          |                    |                    |
++---------v--------+ +---------v--------+ +--------v---------+
+|  Argo Workflows  | |  ML Metadata     | |  Artifact Store  |
+|  (orchestrator)  | |  (MLMD / MySQL)  | |  (MinIO / GCS)   |
++------------------+ +------------------+ +------------------+
+          |
++---------v--------------------------------------------+
+|              Kubernetes Cluster (Pods)                |
+|  [Component A] --> [Component B] --> [Component C]   |
++------------------------------------------------------+
+```
+
+**Key services:**
+
+| Service | Role |
+|---|---|
+| **KFP API Server** | REST + gRPC API that manages pipelines, runs, experiments |
+| **Argo Workflows** | Executes the DAG by scheduling Kubernetes pods |
+| **ML Metadata (MLMD)** | Stores artifacts, executions, and lineage in MySQL |
+| **Artifact Store** | MinIO (local) or GCS/S3 (cloud) for datasets, models, metrics |
+| **KFP UI** | React dashboard to visualise runs, compare metrics, inspect artifacts |
+
+### KFP SDK v2 -- Key Concepts
+
+| Concept | Description |
+|---|---|
+| **Component** | A single, self-contained step (a Python function or a container image) |
+| **Pipeline** | A directed acyclic graph (DAG) of components |
+| **Run** | A single execution of a pipeline with specific parameter values |
+| **Experiment** | A logical grouping of runs for comparison |
+| **Artifact** | A typed output (Dataset, Model, Metrics, HTML, Markdown) persisted to the artifact store |
 
 ---
 
@@ -51,77 +87,165 @@ Companies like Google, Netflix, Amazon, and Meta rely on these practices to:
 
 ### Prerequisites Check
 
-Before starting, verify your environment:
-
 ```bash
-# Check Docker is running
+# Python version (3.10+ required)
+python --version
+
+# Docker running
 docker --version
-docker compose version
 
-# Check you have the project cloned
-ls modules/01-ml-pipelines-overview/
+# pip available
+pip --version
 ```
 
-### Exercise 1: Setup and Configuration
+### Exercise 1: Install the KFP SDK
 
-**Goal:** Get the foundation in place for this module.
-
-**Step 1:** Review the starter files
 ```bash
-ls modules/01-ml-pipelines-overview/lab/starter/
+# Create and activate a virtual environment
+python -m venv .venv
+source .venv/bin/activate   # Linux/macOS
+# .venv\Scripts\activate    # Windows
+
+# Install KFP v2
+pip install "kfp>=2.0,<3.0"
+
+# Verify installation
+python -c "import kfp; print(f'KFP version: {kfp.__version__}')"
 ```
 
-**Step 2:** Set up the required environment
+Expected output:
+
+```
+KFP version: 2.x.x
+```
+
+### Exercise 2: Your First Pipeline -- Hello KFP
+
+Create a file called `hello_pipeline.py`:
+
+```python
+from kfp import dsl, compiler
+
+
+@dsl.component(base_image="python:3.11-slim")
+def say_hello(name: str) -> str:
+    """A trivial component that greets the user."""
+    greeting = f"Hello, {name}! Welcome to Kubeflow Pipelines."
+    print(greeting)
+    return greeting
+
+
+@dsl.component(base_image="python:3.11-slim")
+def show_result(message: str) -> None:
+    """Print the result of the previous step."""
+    print(f"Received from upstream: {message}")
+
+
+@dsl.pipeline(
+    name="hello-pipeline",
+    description="A minimal two-step pipeline to verify KFP SDK installation.",
+)
+def hello_pipeline(recipient: str = "World") -> None:
+    hello_task = say_hello(name=recipient)
+    show_result(message=hello_task.output)
+
+
+if __name__ == "__main__":
+    compiler.Compiler().compile(
+        pipeline_func=hello_pipeline,
+        package_path="hello_pipeline.yaml",
+    )
+    print("Pipeline compiled to hello_pipeline.yaml")
+```
+
+Run it:
+
 ```bash
-# Follow the specific setup for this module
-# Each command is explained below
-cd modules/01-ml-pipelines-overview/lab/starter/
+python hello_pipeline.py
 ```
 
-**Step 3:** Verify the setup
+Expected output:
+
+```
+Pipeline compiled to hello_pipeline.yaml
+```
+
+### Exercise 3: Inspect the Compiled IR
+
+The compiled YAML is the **Intermediate Representation** that the KFP backend executes. Open it and study the structure:
+
 ```bash
-# Run the validation to check your setup
-bash modules/01-ml-pipelines-overview/validation/validate.sh
+# View the top-level keys
+python -c "
+import yaml, json
+
+with open('hello_pipeline.yaml') as f:
+    ir = yaml.safe_load(f)
+
+print('Top-level keys:', list(ir.keys()))
+print('Pipeline name :', ir.get('pipelineInfo', {}).get('name'))
+print('Components    :', list(ir.get('components', {}).keys()))
+print('Deployment    :', list(ir.get('deploymentSpec', {}).get('executors', {}).keys()))
+"
 ```
 
-**What you should see:** The validation script will show PASS for setup-related checks.
+You should see two components (`comp-say-hello`, `comp-show-result`) and two corresponding executors.
 
-### Exercise 2: Core Implementation
+### Exercise 4: Understanding Component I/O Types
 
-**Goal:** Implement the main concept of this module.
+KFP v2 uses a strong type system for component inputs and outputs. Study the following type mapping:
 
-Follow the detailed instructions in the starter directory. The solution directory contains the reference implementation if you get stuck.
+```python
+from kfp import dsl
+from kfp.dsl import Dataset, Model, Metrics, Artifact, Input, Output
 
-**Key points:**
-- Read each instruction carefully before executing
-- Understand WHY each step is needed, not just WHAT to do
-- If something fails, check the troubleshooting section below
 
-### Exercise 3: Integration and Testing
+@dsl.component(base_image="python:3.11-slim")
+def demo_types(
+    # Parameters (serialised as JSON in the pipeline spec)
+    name: str,
+    count: int,
+    ratio: float,
+    flag: bool,
+    # Artifact inputs (passed by reference -- the path to the stored file)
+    input_data: Input[Dataset],
+    # Artifact outputs (KFP provisions the path; you write to it)
+    output_data: Output[Dataset],
+    output_metrics: Output[Metrics],
+) -> str:
+    """Demonstrates KFP v2 parameter and artifact types."""
+    import pandas as pd
 
-**Goal:** Connect this module's work with the broader system.
+    # Read an upstream artifact
+    df = pd.read_csv(input_data.path)
 
-- Verify your implementation works with previous modules
-- Run all tests and validation scripts
-- Document what you learned
+    # Write an output artifact
+    df.to_csv(output_data.path, index=False)
+
+    # Log structured metrics
+    output_metrics.log_metric("row_count", len(df))
+    output_metrics.log_metric("ratio", ratio)
+
+    return f"Processed {len(df)} rows for {name}"
+```
+
+**Key takeaway:** Parameters are lightweight values (str, int, float, bool, list, dict). Artifacts are files persisted to the object store and tracked by ML Metadata.
 
 ---
 
-## Starter Files
+## Key Terminology
 
-Check `lab/starter/` for:
-- Configuration templates to fill in
-- Skeleton code to complete
-- Setup scripts to run
-
-## Solution Files
-
-If you get stuck, `lab/solution/` contains:
-- Complete working configuration
-- Fully implemented code
-- Expected output examples
-
-> **Important:** Try to complete the exercises yourself first! Looking at solutions too early reduces learning.
+| Term | Definition |
+|---|---|
+| **KFP** | Kubeflow Pipelines -- the orchestration platform for ML workflows on Kubernetes |
+| **Component** | A self-contained step with defined inputs, outputs, and a container image |
+| **Pipeline** | A DAG of components that defines the execution order and data flow |
+| **Run** | One execution of a pipeline, identified by a unique run ID |
+| **Experiment** | A namespace for grouping and comparing runs |
+| **Artifact** | A typed, versioned file (Dataset, Model, Metrics) stored in the artifact store |
+| **IR YAML** | The compiled Intermediate Representation of a pipeline |
+| **ML Metadata (MLMD)** | The metadata store that tracks artifacts, executions, and lineage |
+| **Argo Workflows** | The Kubernetes-native workflow engine that executes KFP pipelines |
 
 ---
 
@@ -129,57 +253,31 @@ If you get stuck, `lab/solution/` contains:
 
 | Mistake | Symptom | Fix |
 |---|---|---|
-| Skipping prerequisites | Module exercises fail | Complete previous modules first |
-| Copy-pasting without understanding | Cannot troubleshoot issues | Read explanations, not just commands |
-| Not checking validation | Think you are done but are not | Run validate.sh after each exercise |
-| Ignoring error messages | Problems compound | Read errors carefully, they tell you what is wrong |
+| Using `kfp` v1 API with v2 docs | `ImportError` or unexpected behaviour | Ensure `kfp>=2.0` and use `@dsl.component` not `@func_to_container_op` |
+| Forgetting `packages_to_install` | `ModuleNotFoundError` inside the container | Add all runtime deps to `packages_to_install=[]` |
+| Returning a complex object | `TypeError` during compilation | Components can only return primitives (str, int, float, bool) or named tuples |
+| Passing artifacts as parameters | Compilation error | Use `Input[Dataset]` / `Output[Model]`, not raw strings |
 
 ---
 
 ## Self-Check Questions
 
-Test your understanding before moving on:
-
-1. What is the main purpose of ML Pipelines Overview?
-2. How does this connect to the previous module?
-3. What would happen in production without this?
-4. Can you explain this concept to a non-technical person?
-5. What are three things that could go wrong, and how would you fix them?
+1. What are the three main services that make up a Kubeflow Pipelines deployment?
+2. What is the difference between a *parameter* and an *artifact* in KFP v2?
+3. Why does each component run in its own container?
+4. What file format does `compiler.Compiler().compile()` produce, and what does the backend do with it?
+5. How would you pass a dataset from one component to the next?
 
 ---
 
 ## You Know You Have Completed This Module When...
 
-- [ ] All exercises completed
-- [ ] Validation script passes: `bash modules/01-ml-pipelines-overview/validation/validate.sh`
-- [ ] You can explain the concepts without looking at notes
-- [ ] You understand how this applies to real-world scenarios
+- [ ] KFP SDK v2 is installed and `import kfp` works
+- [ ] You compiled `hello_pipeline.py` and can read the IR YAML
+- [ ] You can explain the KFP architecture diagram from memory
+- [ ] You understand the difference between parameters and artifacts
 - [ ] Self-check questions answered confidently
 
 ---
 
-## Troubleshooting
-
-### Common Issues
-
-**Issue: Validation script fails**
-- Re-read the exercise instructions
-- Check that Docker containers are running
-- Verify you are in the correct directory
-- Compare your work with the solution files
-
-**Issue: Docker container not starting**
-```bash
-docker compose logs <service-name>  # Check logs
-docker compose down && docker compose up -d  # Restart
-```
-
-**Issue: Permission denied**
-```bash
-chmod +x validation/validate.sh  # Make script executable
-sudo chown -R $USER .           # Fix ownership (Linux)
-```
-
----
-
-**Next: [Module 02 →](../02-kubeflow-setup/)**
+**Next: [Module 02 -- Kubeflow Installation and Setup -->](../02-kubeflow-setup/)**
